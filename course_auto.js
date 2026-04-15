@@ -1,5 +1,3 @@
-//请勿在已确认过的文档页面或者习题页面运行该脚本！
-
 (function () {
   "use strict";
 
@@ -84,6 +82,10 @@
     return items.findIndex(x => sameItem(x, item));
   }
 
+  function isItemCompleted(item) {
+    return !!(item?.titleEl && item.titleEl.classList.contains("title--success"));
+  }
+
   function detectPageMode() {
     const pageText = (document.body?.innerText || "").slice(0, 5000);
 
@@ -104,14 +106,12 @@
   function detectCurrentItem(items) {
     if (!items.length) return null;
 
-    // 1. active 类
     const active = items.find(item => {
       const titleBox = item.root.querySelector("div.courseware__title");
       return titleBox && titleBox.classList.contains("active");
     });
     if (active) return active;
 
-    // 2. 蓝色标题
     const blue = items.find(item => {
       try {
         return getComputedStyle(item.titleEl).color === "rgb(0, 128, 255)";
@@ -121,19 +121,16 @@
     });
     if (blue) return blue;
 
-    // 3. 上次点击项
     if (window.__catalogLastClickedItem) {
       const idx = findIndexOfItem(items, window.__catalogLastClickedItem);
       if (idx >= 0) return items[idx];
     }
 
-    // 4. 上次稳定项
     if (window.__catalogLastStableItem) {
       const idx = findIndexOfItem(items, window.__catalogLastStableItem);
       if (idx >= 0) return items[idx];
     }
 
-    // 5. 上次索引
     if (typeof window.__catalogCurrentIndex === "number" && items[window.__catalogCurrentIndex]) {
       return items[window.__catalogCurrentIndex];
     }
@@ -295,7 +292,6 @@
         continue;
       }
 
-      // 真正跳过习题：不点击，不进入
       if (CONFIG.skipTypes.includes(next.type)) {
         log("真正跳过习题/非播放对象，不进入页面", {
           type: next.type,
@@ -305,7 +301,6 @@
         continue;
       }
 
-      // 文档：进入后自动完成
       if (CONFIG.textTypes.includes(next.type)) {
         log("切换到文档对象", {
           type: next.type,
@@ -318,7 +313,6 @@
         return true;
       }
 
-      // 视频/音频：进入并播放
       if (CONFIG.playTypes.includes(next.type)) {
         log("切换到下一播放对象", {
           type: next.type,
@@ -364,6 +358,13 @@
   function handleTextPage(currentItem, items) {
     const btn = findTextCompleteButton();
 
+    if (isItemCompleted(currentItem)) {
+      log("当前文档已是完成状态，直接进入下一项", currentItem);
+      window.__lastTextClickItem = null;
+      gotoNextEligible(items, currentItem, "text_already_success");
+      return;
+    }
+
     if (window.__lastTextClickItem && sameItem(window.__lastTextClickItem, currentItem)) {
       const delta = now() - (window.__lastTextCompleteClickTime || 0);
 
@@ -372,22 +373,30 @@
         return;
       }
 
-      if (isCurrentItemChanged(getCatalogItems(), window.__lastTextClickItem)) {
+      const freshItems = getCatalogItems();
+      const freshCurrent = detectCurrentItem(freshItems);
+
+      if (freshCurrent && isItemCompleted(freshCurrent)) {
+        log("文档点击后已变为完成状态，进入下一项", freshCurrent);
+        window.__lastTextClickItem = null;
+        gotoNextEligible(freshItems, freshCurrent, "text_success_after_click");
+        return;
+      }
+
+      if (isCurrentItemChanged(freshItems, window.__lastTextClickItem)) {
         log("文档点击后当前项已变化，进入下一对象");
         window.__lastTextClickItem = null;
         return;
       }
 
       if (!btn) {
-        log("文档按钮已消失，尝试进入下一对象", currentItem);
-        window.__lastTextClickItem = null;
-        gotoNextEligible(items, currentItem, "text_button_disappeared");
+        log("文档按钮已消失，但目录项未标记 success，先等待...", currentItem);
         return;
       }
     }
 
     if (!btn) {
-      log("文档页未找到完成按钮，等待...", currentItem);
+      log("文档页未找到完成按钮，且当前项未完成，等待...", currentItem);
       return;
     }
 
@@ -448,7 +457,8 @@
       i,
       type: x.type,
       title: x.title,
-      current: !!(currentItem && sameItem(x, currentItem))
+      current: !!(currentItem && sameItem(x, currentItem)),
+      completed: isItemCompleted(x)
     }));
     console.table(simple);
   }
@@ -480,14 +490,18 @@
       const mediaInfo = getCurrentMedia();
       const pageMode = detectPageMode();
 
-      // 文档处理
       if (CONFIG.textTypes.includes(currentItem.type) && !mediaInfo) {
+        if (isItemCompleted(currentItem)) {
+          log("主循环检测到文档已完成，直接跳下一项", currentItem);
+          gotoNextEligible(items, currentItem, "text_success_in_mainloop");
+          return;
+        }
+
         handleTextPage(currentItem, items);
         return;
       }
 
       if (!mediaInfo) {
-        // 正常情况下，不应该再进入习题页
         if (pageMode === "quiz") {
           log("警告：脚本仍然进入了习题页，这说明别处还在点击习题项");
           return;
