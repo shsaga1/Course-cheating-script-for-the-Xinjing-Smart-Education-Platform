@@ -1,6 +1,8 @@
 # Course-cheating-script-for-the-Xinjing-Smart-Education-Platform
 
 **4/15号更新，已完善文档页面检测功能，现在你可以在任何资源页运行此脚本**
+
+
 此脚本为针对新境智慧教育平台的刷课脚本，你也可以参考大概代码结构对其他课程平台编写脚本。  
 
 此脚本代码部分大量使用ai辅助。
