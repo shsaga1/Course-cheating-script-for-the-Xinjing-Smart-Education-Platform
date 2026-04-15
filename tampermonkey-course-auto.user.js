@@ -23,11 +23,15 @@
     skipTypes: ["习题"],
     playTypes: ["视频", "音频"],
     textTypes: ["文档"],
-    endToleranceSec: 1.0,
+
+    endToleranceSec: 0.2,
     nextDebounceMs: 4000,
     textClickDebounceMs: 4000,
     clickSettleMs: 1500,
     mediaWaitMs: 12000,
+    mediaEndedSettleMs: 5000,
+    mediaCompletionTimeoutMs: 25000,
+
     debugTable: false
   };
 
@@ -227,7 +231,7 @@
   function ensurePlaying(media, type) {
     if (!media) return;
 
-    if (media.paused) {
+    if (media.paused && !media.ended) {
       Promise.resolve()
         .then(() => (media.__rawPlay ? media.__rawPlay() : media.play()))
         .then(() => log(type, "开始/恢复播放成功"))
@@ -243,17 +247,22 @@
     }
 
     const handler = function () {
-      const items = getCatalogItems();
-      const currentItem = detectCurrentItem(items);
-      if (currentItem) rememberCurrentItem(items, currentItem);
+      const endedAt = now();
+      media.__catalogEndedAt = endedAt;
 
-      log("媒体 ended，切换下一对象", currentItem);
+      const itemsNow = getCatalogItems();
+      const currentNow = detectCurrentItem(itemsNow);
+      if (currentNow) rememberCurrentItem(itemsNow, currentNow);
 
-      setTimeout(() => {
-        const freshItems = getCatalogItems();
-        const freshCurrent = detectCurrentItem(freshItems);
-        gotoNextEligible(freshItems, freshCurrent, "ended");
-      }, 1200);
+      if (currentNow) {
+        window.__mediaCompletionPendingItem = {
+          title: currentNow.title,
+          type: currentNow.type,
+          since: endedAt
+        };
+      }
+
+      log("媒体 ended，开始等待平台结算完成状态", currentNow);
     };
 
     media.addEventListener("ended", handler);
@@ -322,6 +331,7 @@
         });
         if (clickItem(next, "text_" + next.type)) {
           window.__catalogCurrentIndex = i;
+          window.__mediaCompletionPendingItem = null;
         }
         return true;
       }
@@ -339,6 +349,7 @@
             type: next.type,
             since: now()
           };
+          window.__mediaCompletionPendingItem = null;
         }
         return true;
       }
@@ -464,6 +475,53 @@
     return true;
   }
 
+  function handleMediaCompletionPending(currentItem, items, mediaInfo) {
+    const pending = window.__mediaCompletionPendingItem;
+    if (!pending) return false;
+    if (!currentItem || !sameItem(pending, currentItem)) return false;
+
+    const delta = now() - pending.since;
+
+    if (isItemCompleted(currentItem)) {
+      log("媒体对象已被平台标记完成，进入下一项", currentItem);
+      window.__mediaCompletionPendingItem = null;
+      gotoNextEligible(items, currentItem, "media_completed");
+      return true;
+    }
+
+    if (delta < CONFIG.mediaEndedSettleMs) {
+      log("媒体已结束，等待平台结算...", {
+        item: currentItem,
+        waitedMs: delta
+      });
+      return true;
+    }
+
+    if (mediaInfo && mediaInfo.media) {
+      const media = mediaInfo.media;
+      const endedLike = media.ended || isNearEnd(media);
+
+      if (!endedLike) {
+        log("媒体似乎又恢复为未结束状态，取消等待完成态", currentItem);
+        window.__mediaCompletionPendingItem = null;
+        return false;
+      }
+    }
+
+    if (delta < CONFIG.mediaCompletionTimeoutMs) {
+      log("媒体已结束，但目录尚未标记完成，继续等待...", {
+        item: currentItem,
+        waitedMs: delta
+      });
+      return true;
+    }
+
+    log("等待媒体完成标记超时，仍尝试进入下一项", currentItem);
+    window.__mediaCompletionPendingItem = null;
+    gotoNextEligible(items, currentItem, "media_completion_timeout");
+    return true;
+  }
+
   function printCatalog(items, currentItem) {
     if (!CONFIG.debugTable) return;
     const simple = items.map((x, i) => ({
@@ -514,6 +572,10 @@
         return;
       }
 
+      if (handleMediaCompletionPending(currentItem, items, mediaInfo)) {
+        return;
+      }
+
       if (!mediaInfo) {
         if (pageMode === "quiz") {
           log("警告：脚本仍然进入了习题页，这说明别处还在点击习题项");
@@ -549,17 +611,7 @@
       ensurePlaying(media, mediaInfo.type);
       bindEnded(media);
 
-      if (isNearEnd(media) && !media.paused) {
-        const n = now();
-        if (!window.__lastNextTriggerTime || n - window.__lastNextTriggerTime > CONFIG.nextDebounceMs) {
-          window.__lastNextTriggerTime = n;
-          log("媒体接近结束，尝试切换下一对象", {
-            type: currentItem.type,
-            title: currentItem.title
-          });
-          gotoNextEligible(items, currentItem, "near_end");
-        }
-      }
+      // 不再 near_end 提前跳转
     } catch (e) {
       log("mainLoop 异常", e);
     }
